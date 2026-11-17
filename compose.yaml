@@ -1,0 +1,75 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: moodle
+      POSTGRES_USER: moodle
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Copie .env.example para .env}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U moodle -d moodle"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  moodle:
+    build: ./moodle
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Copie .env.example para .env}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports: ["127.0.0.1:8080:80"]
+    volumes:
+      - moodledata:/var/moodledata
+      - moodleconfig:/var/moodle-state
+  rabbitmq:
+    image: rabbitmq:4-management
+    environment:
+      RABBITMQ_DEFAULT_USER: projeto
+      RABBITMQ_DEFAULT_PASS: projeto-local
+    volumes:
+      - rabbitmq:/var/lib/rabbitmq
+    ports: ["127.0.0.1:15672:15672"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports: ["127.0.0.1:8025:8025"]
+  acompanhamento:
+    build: .
+    command: ["python", "acompanhamento.py"]
+    restart: on-failure
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      AMQP_URL: amqp://projeto:projeto-local@rabbitmq:5672/%2F
+      MOODLE_API: http://moodle/webservice/rest/server.php
+      MOODLE_PUBLIC_URL: http://localhost:8080
+      MOODLE_COURSE_ID: ${MOODLE_COURSE_ID:-}
+      MOODLE_TOKEN: ${MOODLE_TOKEN:-}
+      POLL_SECONDS: ${POLL_SECONDS:-3600}
+  notificacoes:
+    build: .
+    command: ["python", "notificacoes.py"]
+    restart: on-failure
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      AMQP_URL: amqp://projeto:projeto-local@rabbitmq:5672/%2F
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      DB_PATH: /estado/envios.sqlite
+    volumes:
+      - notificacoes:/estado
+volumes:
+  postgres:
+  moodledata:
+  moodleconfig:
+  rabbitmq:
+  notificacoes:
