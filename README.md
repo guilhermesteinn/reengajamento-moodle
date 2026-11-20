@@ -1,32 +1,37 @@
 # Reengajamento no Moodle
 
-Projeto de Engenharia de Software II da PUCRS — 2026/2.
+Trabalho de Engenharia de Software II — PUCRS, 2026/2.
 
-O projeto envia lembretes a estudantes que têm uma atividade pendente no Moodle e cujo prazo vence nas próximas 24 horas. No ambiente local, os e-mails aparecem no Mailpit.
+Envia um lembrete por e-mail para quem ainda não entregou uma atividade que vence nas próximas 24 horas.
 
-## Como funciona
+## Funcionamento
 
-- **Acompanhamento:** consulta as atividades e as entregas no Moodle pela API REST. Quando encontra uma pendência dentro do prazo, publica uma solicitação no RabbitMQ.
-- **Notificações:** lê a fila e envia o lembrete por SMTP. O e-mail traz o nome da atividade, o prazo no horário de Brasília e o link para o Moodle.
-- **Histórico de envios:** depois de um envio bem-sucedido, o serviço registra o curso, a atividade e o aluno no SQLite. Se a mesma solicitação chegar de novo, ela é descartada como duplicada.
+O projeto tem dois serviços:
 
-Atividades sem prazo, vencidas ou que ainda não abriram ficam de fora. Quem já enviou a tentativa atual não recebe lembrete. Um rascunho ainda conta como pendência. O projeto foi testado com atividades individuais visíveis para toda a turma.
+- `acompanhamento`: consulta o Moodle pela API REST e publica as pendências no RabbitMQ.
+- `notificacoes`: recebe as mensagens da fila e envia os e-mails por SMTP.
 
-Se o SMTP falhar, o serviço tenta enviar novamente após 15 segundos, até três tentativas por mensagem. Se todas falharem, a mensagem vai para a fila `lembretes.falhas`. Uma consulta posterior pode gerar outra solicitação se a atividade continuar elegível. Se o serviço cair entre o envio do e-mail e o registro no SQLite, pode ocorrer um reenvio.
+O e-mail contém o nome da atividade, o prazo no horário de Brasília e o link para acessá-la. Nos testes locais, os e-mails são recebidos pelo Mailpit.
 
-## Como rodar localmente
+Atividades vencidas, sem prazo ou que ainda não abriram são ignoradas. Alunos que já enviaram a tentativa atual não recebem lembrete. Entregas em rascunho continuam sendo consideradas pendentes.
 
-É preciso ter Docker com Docker Compose v2 e acesso à internet para baixar as imagens e o código do Moodle.
+Os envios são registrados no SQLite por curso, atividade e aluno. Pedidos repetidos são descartados depois do primeiro envio bem-sucedido.
 
-### 1. Subir o ambiente
+Quando o SMTP falha, são feitas até três tentativas por mensagem, com intervalo de 15 segundos. Após a terceira falha, a mensagem vai para `lembretes.falhas`. As consultas seguintes podem gerar outro pedido enquanto a atividade continuar dentro dos critérios.
 
-Na pasta do projeto, copie o arquivo de exemplo se você ainda não tiver um `.env`:
+## Executar
+
+É necessário ter Docker, Docker Compose v2 e conexão com a internet para montar as imagens.
+
+### 1. Iniciar o ambiente
+
+Na pasta do projeto:
 
 ```bash
 cp -n .env.example .env
 ```
 
-Na primeira instalação, defina uma senha local em `POSTGRES_PASSWORD` no `.env`. Depois, execute:
+Defina `POSTGRES_PASSWORD` no `.env` antes da primeira instalação.
 
 ```bash
 docker compose up -d --build moodle rabbitmq mailpit
@@ -34,11 +39,18 @@ docker compose up -d --build moodle rabbitmq mailpit
 
 ### 2. Instalar o Moodle
 
-Faça esta etapa apenas na primeira instalação. No Bash, execute:
+Esta etapa é feita apenas na primeira instalação.
+
+Copie a configuração:
 
 ```bash
 docker compose exec -u www-data moodle cp /opt/moodle-config.php /var/moodle-state/config.php
+docker compose exec -u root moodle cp --remove-destination /var/moodle-state/config.php /var/www/html/config.php
+```
 
+No Bash, execute o instalador:
+
+```bash
 read -rsp 'Senha do administrador do Moodle: ' SENHA_MOODLE
 echo
 docker compose exec -u www-data moodle php admin/cli/install_database.php \
@@ -51,44 +63,89 @@ docker compose exec -u www-data moodle php admin/cli/install_database.php \
 unset SENHA_MOODLE
 ```
 
-Se o instalador disser que `config.php` não existe mesmo após a cópia, execute o comando abaixo e repita apenas a instalação do banco:
+Acesse http://localhost:8080 e entre com o usuário `admin` e a senha definida.
 
-```bash
-docker compose exec -u root moodle cp --remove-destination \
-  /var/moodle-state/config.php /var/www/html/config.php
-```
-
-Abra o [Moodle](http://localhost:8080), entre como `admin` e crie um curso de teste. Matricule dois alunos fictícios e crie uma atividade com prazo para cerca de duas horas à frente. Para testar o filtro, faça a entrega com um aluno e deixe a do outro pendente.
+Crie um curso, matricule dois alunos fictícios e adicione uma atividade com prazo para aproximadamente duas horas à frente. Faça a entrega com um dos alunos e deixe o outro sem entregar.
 
 ### 3. Configurar a integração
 
-Na administração do Moodle, habilite **Enable web services** em **Advanced features** e ative o protocolo **REST** em **Server → Web services → Manage protocols**.
+Na administração do Moodle:
 
-Crie um serviço externo habilitado e restrito a usuários autorizados. Adicione estas funções:
+1. Habilite **Enable web services** em **Advanced features**.
+2. Ative **REST** em **Server → Web services → Manage protocols**.
+3. Crie um serviço externo habilitado, restrito a usuários autorizados.
+4. Adicione as funções:
 
-- `mod_assign_get_assignments`
-- `core_enrol_get_enrolled_users`
-- `mod_assign_get_submissions`
+```text
+mod_assign_get_assignments
+core_enrol_get_enrolled_users
+mod_assign_get_submissions
+```
 
-Crie um usuário para a integração, matricule-o como professor no curso de teste e conceda a ele a permissão `webservice/rest:use`. Adicione esse usuário aos autorizados do serviço e gere um token em **Manage tokens**. A consulta de matrículas precisa trazer os campos `roles` e `email`.
+Crie um usuário para a integração e matricule-o como professor no curso. Conceda a permissão `webservice/rest:use`, autorize esse usuário no serviço externo e gere um token em **Manage tokens**.
 
-No `.env`, preencha `MOODLE_TOKEN` com o token e `MOODLE_COURSE_ID` com o número que aparece em `course/view.php?id=...`. Para a demonstração, use `POLL_SECONDS=10` para acompanhar os resultados sem esperar uma hora. O intervalo padrão é de 3600 segundos. O `.env` fica apenas na máquina local.
+A consulta dos alunos precisa retornar os campos `roles` e `email`.
 
-### 4. Rodar os serviços do projeto
+Preencha no `.env`:
+
+- `MOODLE_TOKEN`: token gerado no Moodle.
+- `MOODLE_COURSE_ID`: ID do curso, disponível na URL `course/view.php?id=...`.
+- `POLL_SECONDS`: intervalo entre consultas, em segundos. O padrão é `3600`; para testar, use `10`.
+
+O `.env` não deve ser enviado ao repositório.
+
+### 4. Iniciar os serviços
 
 ```bash
 docker compose up -d --build acompanhamento notificacoes
+```
+
+Para acompanhar os logs:
+
+```bash
 docker compose logs -f acompanhamento notificacoes
 ```
 
-Abra o [Mailpit](http://localhost:8025) para conferir os e-mails. Para parar o ambiente preservando os volumes, use `docker compose down` sem `-v`. Para subir novamente, use `docker compose up -d`.
+Para consultar os e-mails, abra http://localhost:8025.
+
+### Parar e iniciar novamente
+
+Para parar preservando os dados:
+
+```bash
+docker compose down
+```
+
+Para iniciar novamente:
+
+```bash
+docker compose up -d
+```
+
+Não use `docker compose down -v` se quiser manter os volumes.
 
 ## Testes
 
-Para executar a suíte automatizada:
+Execute:
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-O [registro de testes](docs/testes.md) reúne os resultados dos cinco cenários executados no ambiente local: envio do lembrete, filtro de alunos e atividades, bloqueio de duplicatas, recuperação após falha no SMTP e persistência após recriar os contêineres. Os prints e os trechos dos logs estão no mesmo registro.
+Os testes automatizados usam respostas simuladas do Moodle e do SMTP.
+
+Os testes de integração foram feitos com Moodle, RabbitMQ e Mailpit em Docker. Foram verificados:
+
+- Envio para o aluno com atividade pendente.
+- Filtro de alunos que já entregaram e de atividades fora dos critérios.
+- Descarte de mensagens duplicadas.
+- Nova tentativa após falha no SMTP.
+- Persistência dos dados após recriar os contêineres.
+
+Os resultados, prints e logs estão em [docs/testes.md](docs/testes.md).
+
+## Limitações
+
+Os testes foram feitos com atividades individuais, visíveis para toda a turma.
+
+Se o serviço parar depois de enviar o e-mail e antes de registrar o envio no SQLite, o lembrete pode ser enviado novamente.
