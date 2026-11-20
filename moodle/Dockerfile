@@ -10,3 +10,8 @@ RUN git -c http.version=HTTP/1.1 clone --progress --depth 1 --branch MOODLE_405_
  && ln -s /var/moodle-state/config.php /var/www/html/config.php \
  && printf 'max_input_vars=5000\nmemory_limit=256M\n' > /usr/local/etc/php/conf.d/moodle.ini
 COPY config.template.php /opt/moodle-config.php
+
+COPY entrypoint.sh /usr/local/bin/moodle-entrypoint
+RUN chmod +x /usr/local/bin/moodle-entrypoint
+ENTRYPOINT ["moodle-entrypoint"]
+CMD ["apache2-foreground"]
